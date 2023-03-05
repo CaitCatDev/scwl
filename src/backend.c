@@ -84,7 +84,7 @@ int scwl_drm_backend_init() {
 		printf("DRM FAiled to Map buffer\n");
 		return -1;
 	}
-
+	
 	backend.data = mmap(NULL, backend.size, PROT_READ | PROT_WRITE, MAP_SHARED, backend.fd, backend.offset);
 	
 	for(uint32_t x = 0; x < backend.width; ++x) {
@@ -106,6 +106,25 @@ int scwl_drm_backend_init() {
 	return 0;
 }
 
+void scwl_drm_backend_cleanup() {
+	//Unmap the memory 
+	munmap(backend.data, backend.size);
+	
+	//Remove the scanout framebuffer 
+	drmModeRmFB(backend.fd, backend.fb_id);
+
+	//Destroy the dumb buffer 
+	drmModeDestroyDumbBuffer(backend.fd, backend.buffer_handle);
+	
+	drmModeFreeCrtc(backend.crtc);
+	drmModeFreeEncoder(backend.encoder);
+	drmModeFreeConnector(backend.connector);
+	drmModeFreePlaneResources(backend.plane_res);
+	drmModeFreeResources(backend.res);
+
+	close(backend.fd);
+}
+
 /* Temp main function to just test with 
  * TODO: Remove this once it's no longer needed
  *
@@ -113,4 +132,8 @@ int scwl_drm_backend_init() {
 
 int main(int argc, char **argv) {
 	scwl_drm_backend_init();
+	
+	scwl_drm_backend_cleanup();
+
+	return 0;
 }
