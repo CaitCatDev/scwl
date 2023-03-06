@@ -34,4 +34,7 @@ struct scwl_drm_backend {
 	int closing;
 	struct scwl_drm_buffer buffers[2];
 	struct scwl_drm_buffer cursor[2];
+	//HACK:
+	uint32_t curx;
+	uint32_t cury;
 };

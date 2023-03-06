@@ -40,7 +40,7 @@ void scwl_drm_first_frame_handle(int fd, unsigned int frame, unsigned int sec, u
 	printf("VBLANK EVENT:\n");
 	
 	srand(time(NULL));
-	uint32_t pixel = rand();
+	uint32_t pixel = 0;
 
 		for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
 			for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
@@ -65,9 +65,6 @@ void scwl_drm_page_flip_handler(int fd, unsigned int seq,
 
 /*HACK: TEMPORAY FUNCTION TO GENERATE 
  * SOME SCREEN TEARING
- * WARN: LESS OF A CODE WARNING MORE OF A 
- * PLEASE BE CAREFUL IF YOU SUFFER FROM EPILEPSY 
- * OR ARE SENSETIVE TO FLASHING LIGHTS.
  * NOTE: THe old code was worse than this in terms
  * of flashing but we will still just be careful 
  * and leave the warning.
@@ -75,7 +72,7 @@ void scwl_drm_page_flip_handler(int fd, unsigned int seq,
 void scwl_drm_draw_frame() {
 	int ret = 0;
 	srand(time(NULL));
-	uint32_t pixel = rand();
+	uint32_t pixel = 0x00000000;
 
 		for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
 			for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
@@ -89,7 +86,7 @@ void scwl_drm_draw_frame() {
 		}
 		*/
 
-		drmModeMoveCursor(backend.fd, backend.crtc->crtc_id, rand() % backend.mode.hdisplay, rand() % backend.mode.vdisplay);
+		drmModeMoveCursor(backend.fd, backend.crtc->crtc_id, backend.curx, backend.cury);
 
 		if(drmModePageFlip(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, DRM_MODE_PAGE_FLIP_EVENT, &backend)) {
 			printf("Cannot flip CRTC: %m\n");
@@ -160,7 +157,8 @@ int scwl_drm_backend_init() {
 		printf("Error: Unable to open DRM device: %m\n");
 		return -1;
 	}
-
+	backend.curx = 100;
+	backend.cury = 100;
 	backend.res = drmModeGetResources(backend.fd);
 	backend.plane_res = drmModeGetPlaneResources(backend.fd);
 
@@ -264,14 +262,22 @@ int scwl_drm_backend_init() {
 
 	
 	
-	for(int i = 0; i < 90; ++i) {
+	while(1) {
 		poll(fds, 2, 100);
 		if(fds[0].revents == POLLIN) {
 			drmHandleEvent(backend.fd, &ev_ctx);
 			fds[0].revents = 0;//reset 
 		} 
 		if(fds[1].revents == POLLIN) {
-			break;
+			int ch = getchar();
+			//HACK: GAMER Keys for cursor 
+			if(ch == 'w') {
+				backend.cury -= 10;
+			} else if (ch =='s'){
+				backend.cury += 10;
+			} else if(ch == 'q') {
+				break;
+			}
 		}
 	}
 	backend.closing = 1;//Inform page flip handler not to 
@@ -318,23 +324,7 @@ void scwl_drm_backend_cleanup() {
 
 int main(int argc, char **argv) {
 	int ch = 0;
-	printf("\033[31;1;4m"
-			"We use a random function call to generate\n"
-			"A color for the screen output and change it\n" 
-			"Each render cycle to induce screen tearing\n"
-			"it can sometimes be bright and/or quick to\n"
-			"Flash so we recommend you don't run this\n"
-			"Early Version if you are senstive to bright\n"
-			"and/or flashing lights!\n"
-			"\033[0m\n");
-	printf("Press c and hit enter to continue if you accept this risk\nOr Press q and hit enter to quit the application early\n");
-	
-	while((ch = tolower(getchar())) != 'c') { 
-		if(ch == 'q') {
-			return -1;
-		}
-		//pause for character 
-	}
+		
 	if(scwl_drm_backend_init() < 0) {
 		return -1;
 	}
