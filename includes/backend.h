@@ -33,4 +33,5 @@ struct scwl_drm_backend {
 	int front_bfr;
 	int closing;
 	struct scwl_drm_buffer buffers[2];
+	struct scwl_drm_buffer cursor[2];
 };
