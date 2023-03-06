@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <wayland-server.h>
+#include <poll.h>
 
 //DRM 
 #include <libdrm/drm.h>
@@ -28,6 +29,19 @@ int scwl_drm_open_device(const char *path) {
 	return fd;
 }
 
+void scwl_drm_draw_frame(); 
+
+void scwl_drm_page_flip_handler(int fd, unsigned int seq,
+		unsigned int tv_sec, unsigned int tv_usec,
+		void *user_data) {
+	struct scwl_drm_backend *drm = user_data;
+
+	drm->pending_flip = 0;
+	if(!drm->closing) {
+		scwl_drm_draw_frame();
+	}
+}
+
 /*HACK: TEMPORAY FUNCTION TO GENERATE 
  * SOME SCREEN TEARING
  * WARN: LESS OF A CODE WARNING MORE OF A 
@@ -41,18 +55,26 @@ void scwl_drm_draw_frame() {
 	int ret = 0;
 	srand(time(NULL));
 	uint32_t pixel = rand();
+	drmEventContext ev_ctx = { 
+		.version = 2,
+		.page_flip_handler = scwl_drm_page_flip_handler,
+	};
 
-	for(int i = 0; i < 30; i++) {
 		for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
 			for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
 				backend.buffers[backend.front_bfr].data[x + (y * backend.buffers[backend.front_bfr].width)] = pixel;
 			}
 		}	
 
+		/*OLD CODE 
 		if(drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, 0, 0, &backend.connector->connector_id, 1, &backend.mode) != 0) {
 			printf("Error setting CRTC %m\n");
 		}
-	
+		*/
+
+		if(drmModePageFlip(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, DRM_MODE_PAGE_FLIP_EVENT, &backend)) {
+			printf("Cannot flip CRTC: %m\n");
+		}
 
 		/*NOTE: Change Pixel Data A little*/
 		pixel += 0x140000;
@@ -60,14 +82,12 @@ void scwl_drm_draw_frame() {
 		pixel += 0x1000;
 		
 		backend.front_bfr ^= 1;
-
-		usleep(100000);
-	}
+		backend.pending_flip = 1;
 }
 
 int scwl_drm_create_buffer(struct scwl_drm_buffer *buffer) {
 	//TODO: Make this an allocation
-
+	
 	if(drmModeCreateDumbBuffer(backend.fd, backend.mode.hdisplay, backend.mode.vdisplay, 
 			32, 0, &buffer->buffer_handle, &buffer->pitch, &buffer->size) != 0) {
 		printf("DRM failed to create dumb buffer: %m\n");
@@ -152,14 +172,46 @@ int scwl_drm_backend_init() {
 	//TODO: Implement Double Buffer
 	//TODO: Use the ATOMIC API
 
+
+	scwl_drm_draw_frame();
 	
+	struct pollfd fds[2] = { 0 };
+	fds[0].events = POLLIN;
+	fds[0].fd = backend.fd;
+	fds[0].revents = 0;
+	fds[1].events = POLLIN;
+	fds[1].fd = STDIN_FILENO;
+	fds[1].revents = 0;
+
+	drmEventContext ev_ctx = { 
+		.version = 2,
+		.page_flip_handler = scwl_drm_page_flip_handler,
+	};
+
 
 	//Set the CRTC to our fb 
 	drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, 
 			0, 0, &backend.connector->connector_id, 1, &backend.mode);
-	
-	scwl_drm_draw_frame();
+	for(int i = 0; i < 90; ++i) {
+		poll(fds, 2, 100);
+		if(fds[0].revents == POLLIN) {
+			drmHandleEvent(backend.fd, &ev_ctx);
+			fds[0].revents = 0;//reset 
+		} 
+		if(fds[1].revents == POLLIN) {
+			break;
+		}
+	}
+	backend.closing = 1;//Inform page flip handler not to 
+						//send any more events 
 
+	//Just handle the last POLL Page flip Event	
+	while(backend.pending_flip) {
+		poll(fds, 1, 100);
+			if(fds[0].revents == POLLIN) {
+				drmHandleEvent(backend.fd, &ev_ctx);
+			}	
+	}
 	//Reset the CRTC 
 	drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.crtc->buffer_id, 
 			0, 0, &backend.connector->connector_id, 1, &backend.crtc->mode);

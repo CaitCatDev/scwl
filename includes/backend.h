@@ -4,6 +4,8 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <wayland-server.h>
+
 struct scwl_drm_buffer {
 	uint32_t *data;
 	uint64_t offset;
@@ -18,6 +20,7 @@ struct scwl_drm_buffer {
 };
 
 struct scwl_drm_backend {
+	struct wl_display *display;
 	int fd;
 	drmModeResPtr res;
 	drmModePlaneResPtr plane_res;
@@ -26,7 +29,8 @@ struct scwl_drm_backend {
 	drmModeEncoderPtr encoder;
 	drmModeCrtcPtr crtc; 
 	drmModeModeInfo mode;
-	
+	int pending_flip;	
 	int front_bfr;
+	int closing;
 	struct scwl_drm_buffer buffers[2];
 };
