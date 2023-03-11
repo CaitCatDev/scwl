@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <time.h>
+#include <wayland-server-core.h>
 #include <wayland-server.h>
 #include <poll.h>
 
@@ -28,8 +29,10 @@
 
 //Print
 #include <stdio.h>
+#include <evdev.h>
 
 static struct scwl_drm_backend backend;
+
 
 int scwl_drm_open_device(const char *path) {
 	int fd = open(path, O_RDWR | O_CLOEXEC);
@@ -44,18 +47,19 @@ void scwl_drm_draw_frame();
 
 void scwl_drm_first_frame_handle(int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *data) {
 	printf("VBLANK EVENT:\n");
-	
+
 	srand(time(NULL));
-	uint32_t pixel = 0;
+	uint32_t pixel = 0x282a36;
 
-		for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
-			for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
-				backend.buffers[backend.front_bfr].data[x + (y * backend.buffers[backend.front_bfr].width)] = pixel;
-			}
-		}	
+	for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
+		for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
+			backend.buffers[backend.front_bfr].data[x + (y * backend.buffers[backend.front_bfr].width)] = pixel;
+		}
+	}	
 
-
+	
 	drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, 0, 0, &backend.connector->connector_id, 1, &backend.mode);
+	scwl_drm_draw_frame();
 }
 
 void scwl_drm_page_flip_handler(int fd, unsigned int seq,
@@ -78,7 +82,7 @@ void scwl_drm_page_flip_handler(int fd, unsigned int seq,
 void scwl_drm_draw_frame() {
 	int ret = 0;
 	srand(time(NULL));
-	uint32_t pixel = 0x00000000;
+	uint32_t pixel = 0x282a36;
 
 		for(uint32_t x = 0; x < backend.buffers[backend.front_bfr].width; ++x) {
 			for(uint32_t y = 0; y < backend.buffers[backend.front_bfr].height; ++y) {
@@ -86,13 +90,6 @@ void scwl_drm_draw_frame() {
 			}
 		}	
 
-		/*OLD CODE 
-		if(drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, 0, 0, &backend.connector->connector_id, 1, &backend.mode) != 0) {
-			printf("Error setting CRTC %m\n");
-		}
-		*/
-
-		drmModeMoveCursor(backend.fd, backend.crtc->crtc_id, backend.curx, backend.cury);
 
 		if(drmModePageFlip(backend.fd, backend.crtc->crtc_id, backend.buffers[backend.front_bfr].fb_id, DRM_MODE_PAGE_FLIP_EVENT, &backend)) {
 			printf("Cannot flip CRTC: %m\n");
@@ -146,45 +143,45 @@ int scwl_drm_create_buffer(struct scwl_drm_buffer *buffer) {
 	return 0;
 }
 
-//HACK: REALLY this should be an input backend 
-void evdev_event(int fd) {
-	struct input_event ev = { 0 };
-	struct input_absinfo absinfo = { 0 };
-	struct input_absinfo yinfo = { 0 };
-	static uint32_t touchx; 
-	static uint32_t touchy;
-	ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
-	ioctl(fd, EVIOCGABS(ABS_Y), &yinfo);
-	read(fd, &ev, sizeof(ev));
-	if(ev.code == ABS_X) {
-		printf("EV VALU: %d\n", ev.value);
-		backend.curx += (absinfo.value - touchx);
-		touchx = absinfo.value;
-	}
-	else if (ev.code == ABS_Y) {
-		printf("EV Y VALU: %d\n", ev.value);
-		//y = (y / resolution_y) * resolution_y;
-		backend.cury += (yinfo.value - touchy);
-		touchy = yinfo.value;
-	}
-	
-	
-	printf("%d %d\n", REL_X, REL_Y);
+/* Checks if a CRTC is linked to an encoder/connector pair 
+ * if the CRTC is in use the id of the connector using this 
+ * crtc will be returned. Else if the CRTC is currently free 
+ * 0 will be returned
+ */
+uint32_t scwl_drm_crtc_in_use(int fd, int crtc_id, drmModeResPtr resources) {
+	for(int i = 0; i < resources->count_connectors; i++) {
+		drmModeConnectorPtr connector = drmModeGetConnector(fd, resources->connectors[i]);
+		
+		if(connector->encoder_id) {
+			drmModeEncoderPtr encoder = drmModeGetEncoder(fd, connector->encoder_id);
 
-	if(backend.cury >= 1080) {
-		backend.cury = 1070;
+			if(encoder->crtc_id == crtc_id) {
+				drmModeFreeEncoder(encoder);
+				drmModeFreeConnector(connector);
+				return connector->connector_id; //CRTC is in use 
+			}
+
+			drmModeFreeEncoder(encoder);
+		}
+
+		drmModeFreeConnector(connector);
 	}
-	if(backend.curx >= 1920) {
-		backend.curx = 1910;
-	}
-	
-	printf("XAXIS: \n");
-	__builtin_dump_struct(&absinfo, &printf);
-	printf("YAXIS: \n");
-	__builtin_dump_struct(&yinfo, &printf);
+
+	return 0;
 }
 
-int scwl_drm_backend_init() {
+int scwl_drm_event(int fd, uint32_t mask, void *data) {
+	drmEventContext ev_ctx = { 
+		.version = 2,
+		.vblank_handler = scwl_drm_first_frame_handle, 
+		.page_flip_handler = scwl_drm_page_flip_handler,
+	};
+	drmHandleEvent(fd, &ev_ctx);
+	
+	return 0;
+}
+
+int scwl_drm_backend_init(struct wl_display *display) {
 	backend.fd = scwl_drm_open_device("/dev/dri/card0");
 
 	if(drmIsKMS(backend.fd) == 0) {
@@ -224,6 +221,32 @@ int scwl_drm_backend_init() {
 		return -1;
 	}
 
+	uint32_t possible = drmModeConnectorGetPossibleCrtcs(backend.fd, backend.connector);
+
+	
+	
+	//Attempt to pair CRTC/Encoder pair as atm we just use 
+	//whatever pair was already present which there is no gurantee
+	//that any pair will already exist
+	/*
+	for(int i = 0; i < backend.res->count_crtcs; i++) {
+		drmModeCrtcPtr crtc; 
+		if(i & possible) {
+			crtc = drmModeGetCrtc(backend.fd, backend.res->crtcs[i]);
+			int in_use = scwl_drm_crtc_in_use(backend.fd, crtc->crtc_id, backend.res);
+			if(!in_use) {
+				backend.crtc = crtc;
+				break;
+			}
+			drmModeFreeCrtc(crtc);
+		}
+	}
+	
+	for(int i = 0; i < backend.res->count_encoders; i++) {
+		drmModeEncoderPtr encoder;
+		
+	}
+	*/
 	if(backend.connector->encoder_id) {
 		backend.encoder = drmModeGetEncoder(backend.fd, backend.connector->encoder_id);
 	}
@@ -236,6 +259,7 @@ int scwl_drm_backend_init() {
 		if(backend.crtc->crtc_id == backend.res->crtcs[ind]) {
 			break;
 		}
+		
 	}
 
 	backend.mode = backend.connector->modes[0];
@@ -268,22 +292,16 @@ int scwl_drm_backend_init() {
 			backend.cursor[0].buffer_handle, 
 			backend.cursor[0].width, 
 			backend.cursor[0].height);
-
+	
 	printf("set Plane: %m\n");
-	struct pollfd fds[3] = { 0 };
-	fds[0].events = POLLIN;
-	fds[0].fd = backend.fd;
-	fds[0].revents = 0;
-	fds[1].events = POLLIN;
-	fds[1].fd = STDIN_FILENO;
-	fds[1].revents = 0;
-	fds[2].events = POLLIN;
-	fds[2].fd = open("/dev/input/event15", O_RDONLY | O_NONBLOCK);
-	fds[2].revents =0; 
+	
+	backend.display = display;
+	backend.ev_loop = wl_display_get_event_loop(display);
+	backend.ev_source = wl_event_loop_add_fd(backend.ev_loop, backend.fd, WL_EVENT_READABLE, scwl_drm_event, &backend);
 
 	drmVBlank vbl = { 0 };
 
-	//TODO: Implement Sequence and VBLank handlers 
+	//TODO: Implement Sequence handlers 
 	//TODO: Implement V2 page flip and change draw func
 	drmEventContext ev_ctx = { 
 		.version = 2,
@@ -295,63 +313,32 @@ int scwl_drm_backend_init() {
 	vbl.request.sequence = 1;
 	vbl.request.type = DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT | DRM_VBLANK_NEXTONMISS;
 	drmWaitVBlank(backend.fd, &vbl);
-	//Set the CRTC to our fb
-	while(1) {
-		poll(fds, 1, 100);
-			if(fds[0].revents == POLLIN) {
-				drmHandleEvent(backend.fd, &ev_ctx);
-				break;
-			}	
-	}
-	scwl_drm_draw_frame();
 	
 
-	while(1) {
-		poll(fds, 3, 5000);
-		if(fds[0].revents == POLLIN) {
-			drmHandleEvent(backend.fd, &ev_ctx);
-			fds[0].revents = 0;//reset 
-		}
-		if(fds[2].revents == POLLIN) {
-			printf("Evdev");
-			evdev_event(fds[2].fd);
-			fds[2].revents = 0;
-		}
-		if(fds[1].revents == POLLIN) {
-			int ch = getchar();
-			//HACK: GAMER Keys for cursor 
-			if(ch == 'w') {
-				backend.cury -= 10;
-			} else if (ch =='s'){
-				backend.cury += 10;
-			} else if(ch == 'q') {
-				break;
-			}
-		}
-	}
-	backend.closing = 1;//Inform page flip handler not to 
-						//send any more events 
-
-	//Just handle the last POLL Page flip Event	
-	while(backend.pending_flip) {
-		poll(fds, 1, 100);
-			if(fds[0].revents == POLLIN) {
-				drmHandleEvent(backend.fd, &ev_ctx);
-			}	
-	}
-	//Reset the CRTC 
-
-	drmModeSetCursor(backend.fd, backend.crtc->crtc_id, 
-			0, 0, 0);
-
-
-	drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.crtc->buffer_id, 
-			0, 0, &backend.connector->connector_id, 1, &backend.crtc->mode);
-	
 	return 0;
 }
 
+void scwl_drm_move_cursour(int x, int y) {
+	drmModeMoveCursor(backend.fd, backend.crtc->crtc_id, x, y);
+}
+
 void scwl_drm_backend_cleanup() {
+	drmEventContext ev_ctx = { 
+		.version = 2,
+		.vblank_handler = scwl_drm_first_frame_handle, 
+		.page_flip_handler = scwl_drm_page_flip_handler,
+	};
+	//Just handle the last POLL Page flip Event	
+	while(backend.pending_flip) {
+		drmHandleEvent(backend.fd, &ev_ctx);
+	}
+	//Reset the CRTC 
+	drmModeSetCursor(backend.fd, backend.crtc->crtc_id, 0, 0, 0);
+	printf("Reset Cursor %m\n");
+	if(drmModeSetCrtc(backend.fd, backend.crtc->crtc_id, backend.crtc->buffer_id, 0, 0, &backend.connector->connector_id, 1, &backend.crtc->mode)) {
+		printf("Failed to reset CRTC: %m\n");
+	}
+
 
 	//Clean up buffers 
 	scwl_drm_destroy_buffer(backend.buffers[0]);
@@ -373,11 +360,19 @@ void scwl_drm_backend_cleanup() {
 
 int main(int argc, char **argv) {
 	int ch = 0;
-		
-	if(scwl_drm_backend_init() < 0) {
+	
+	struct wl_display *display = wl_display_create();
+	const char *socket = wl_display_add_socket_auto(display);
+
+	scwl_evdev_backend_init(display);
+	
+	if(scwl_drm_backend_init(display) < 0) {
 		return -1;
 	}
-	
+
+	wl_display_run(display);
+	backend.closing = 1;
+
 	scwl_drm_backend_cleanup();
 
 	return 0;

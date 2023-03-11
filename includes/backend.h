@@ -21,6 +21,8 @@ struct scwl_drm_buffer {
 
 struct scwl_drm_backend {
 	struct wl_display *display;
+	struct wl_event_loop *ev_loop;
+	struct wl_event_source *ev_source;
 	int fd;
 	drmModeResPtr res;
 	drmModePlaneResPtr plane_res;
